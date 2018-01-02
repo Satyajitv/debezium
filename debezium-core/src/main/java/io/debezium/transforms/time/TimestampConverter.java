@@ -3,11 +3,6 @@
  *
  * Licensed under the Apache Software License version 2.0, available at http://www.apache.org/licenses/LICENSE-2.0
  */
-/*
-Note: All the null values for any fields should be made to optional, if not while validating the value and schema, we would end up getting null value for field error.
-       Going to convert all null value columns into isoptional if they dont contains any data, so to avoid any kinds of (Conversion error: null value for field that is required and has no default value),
-       not just for nestedvalues, but also for struct fields.
- */
 
 package io.debezium.transforms.time;
 
@@ -41,7 +36,30 @@ import java.util.stream.Collectors;
  * This transform is based on two different set of properties as shown below,
  * 1. "transforms":"TimestampConv"
  *    "transforms.TimestampConv.type":"io.debezium.transforms.time.TimestampConverter$Value"
- *    "transforms.TimestampConv.fields":"<databasename>.<tablename>.<after/before>.<nestedfield>-><destinationtype> || <databasename>.<tablename>.<field>-><destinationtype>"
+ *    "transforms.TimestampConv.fields":"<databasename>.<tablename>.<after/before>.<nestedfield>-><destinationtype>
+ *                                                    || <databasename>.<tablename>.<field>-><destinationtype>"
+ *           example: "transforms.TimestampConv.fields":"clickStream.cookies.after.deleted_at->string,clickStream.cookies.ts_ms->string"
+ *           So for a debezium message like below, the value for DELETED_AT under AFTER will be changed into timestamp string format and
+ *                                                     value for TS_MS will be changed to timestamp string format.
+ *
+ *             "payload": {
+ *                   "before": null,
+ *                   "after": {
+ *                       "id": 1062558593,
+ *                      "category": "queue",
+ *                      "sub_category": "wait",
+ *                      "item_description": "2000",
+ *                      "usage": 116,
+ *                      "created_at": "1510237013611",
+ *                      "deleted_at": "1510237013611"        //clickStream.cookies.after.deleted_at parameter points to this deleted_at field.
+ *                          },
+ *                  "source": {
+ *                      "name": "TELMATEQA",*********
+ *                            },
+ *                  "op": "c",
+ *                  "ts_ms": 1514515266102                  //clickStream.cookies.ts_ms paraemter points to this ts_ms field.
+ *              }
+ *
  *    "transforms.TimestampConv.timestamp.format":"yyyy-MM-dd hh:mm:ss"
  *    "transforms.TimestampConv.date.format":"yyyy-MM-dd"
  *   So, the first option would start converting all the fields or nestedfields provided in the field property.
@@ -49,22 +67,21 @@ import java.util.stream.Collectors;
  * 2. "transforms":"TimestampConv"
  *    "transforms.TimestampConv.type":"io.debezium.transforms.time.TimestampConverter$Value"
  *    "transforms.TimestampConv.field.type":"io.debezium.time.Timestamp->string,io.debezium.time.Date->string"
- *  So, the second option would just convert all the types specified in field.type that are present in Debezium message into its target types, specified in field.type property.
+ *  So, the second option would just convert all the types specified in field.type that are present in Debezium message into its target types,
+ *     specified in field.type property.
  *
  * 3. Combination of both, in case we would like to convert specific fields into different format, but all others as specified in field.type property.
+ *
+ Note: All the null values for any fields should be made to optional, if not while validating the value and schema, we would end up getting null value for field error.
+ Going to convert all null value columns into isoptional if they dont contains any data, so to avoid any kinds of
+ (Conversion error: null value for field that is required and has no default value),not just for nestedvalues, but also for struct fields.
+ *
  *
  * @param <R> the subtype of {@link ConnectRecord} on which this transformation will operate
  * @author Satyajit Vegesna
  */
 
 import static org.apache.kafka.connect.transforms.util.Requirements.requireStruct;
-
-/**
- * DebeziumTimestampConverter uses this interface to define custom ways of converting different versions/types of timestamp/date formats.
- * DebeziumTimestampConverter has a static block that collects all the custom conversion objects into TRANSLATORS map,
- * and are called based the timestamp type conversion.
- */
-
 
 public abstract class TimestampConverter<R extends ConnectRecord<R>> implements Transformation<R> {
 
@@ -83,15 +100,22 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
 
     private static final ConfigDef FIELD_DOC = new ConfigDef()
             .define(FIELD_CONFIG, ConfigDef.Type.STRING, FIELD_DEFAULT, ConfigDef.Importance.LOW,
-                    "The field containing the timestamp,for example: ts_ms is a field, whose entire value is just the long number value and not like a struct. So any field that contains just a value and not struct type value, and in our case we would only have one such field in debezium, ts_ms.")
+                    "Specify the fields that are to be converted to destination types using the format," +
+                            " <databasename>.<tablename>.<after/before>.<nestedfield>-><destinationtype> " +
+                            "|| <databasename>.<tablename>.<field>-><destinationtype>" +
+                            "for example:" +
+                            "Usage:'transforms.TimestampConv.fields':'clickStream.cookies.after.deleted_at->string,clickStream.cookies.ts_ms->string'")
             .define(TIMESTAMP_FORMAT_CONFIG, ConfigDef.Type.STRING, TIMESTAMP_FORMAT_DEFAULT, ConfigDef.Importance.LOW,
-                    "A SimpleDateFormat-compatible format for the timestamp. Used to generate the output when type=string or used to parse the input if the input is a string.")
+                    "A SimpleDateFormat-compatible format for the timestamp." +
+                            " Used to generate the output when type=string or used to parse the input if the input is a string.")
             .define(DATE_FORMAT_CONFIG, ConfigDef.Type.STRING, DATE_FORMAT_DEFAULT, ConfigDef.Importance.LOW,
-                    "A SimpleDateFormat-compatible format for the date. Used to generate the output when type=string or used to parse the input if the input is a string.")
-            .define(FIELD_TYPE_CONFIG, ConfigDef.Type.STRING, FIELD_TYPE_DEFAULT, ConfigDef.Importance.LOW, "is a comma-seperated string, providing an option to add multiple converters.\n" +
-                    "<Type of Timestamp Object> -> <To Target type>\n" +
-                    "can add multiple type converters as below," +
-                    " <Type of Timestamp Object> -> <To Target type>,<Type of Timestamp Object> -> <To Target type>");
+                    "A SimpleDateFormat-compatible format for the date." +
+                            " Used to generate the output when type=string or used to parse the input if the input is a string.")
+            .define(FIELD_TYPE_CONFIG, ConfigDef.Type.STRING, FIELD_TYPE_DEFAULT, ConfigDef.Importance.LOW, "Is used when," +
+                            "we are interested in converting all fields of specific types to destination types" +
+                            "for example:" +
+                            "all io.debezium.time.Timestamp to be converted to string." +
+                            "Usage:'transforms.TimestampConv.field.type':'io.debezium.time.Timestamp->string,io.debezium.time.Date->string'");
 
     private static final String PURPOSE = "converting timestamp formats";
     private static final String TYPE_INT64 = "INT64";
@@ -110,8 +134,8 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
     private static final String TYPE_DATE = "Date";
     private static final String TYPE_TIME = "Time";
     private static final String TYPE_TIMESTAMP = "Timestamp";
-    private static final String TYPE_EPCOH_DATE = "EpochDate";
-    private static final Set<String> VALID_TYPES = new HashSet<>(Arrays.asList(TYPE_STRING, TYPE_UNIX, TYPE_DATE, TYPE_TIME, TYPE_TIMESTAMP, TYPE_EPCOH_DATE));
+    private static final String TYPE_EPOCH_DATE = "EpochDate";
+    private static final Set<String> VALID_TYPES = Collections.unmodifiableSet(new HashSet<String>(Arrays.asList(TYPE_STRING, TYPE_UNIX, TYPE_DATE, TYPE_TIME, TYPE_TIMESTAMP, TYPE_EPOCH_DATE)));
 
     private static final TimeZone UTC = TimeZone.getTimeZone("UTC");
 
@@ -292,7 +316,7 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
             }
         });
 
-        TRANSLATORS.put(TYPE_EPCOH_DATE, new Translator() {
+        TRANSLATORS.put(TYPE_EPOCH_DATE, new Translator() {
             @Override
             public Date toRaw(Config config, Object orig) {
                 return Date.from(java.time.LocalDate.ofEpochDay((Integer) orig).atStartOfDay(ZoneId.systemDefault()).toInstant());
@@ -426,6 +450,11 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
 
     @Override
     public void configure(Map<String, ?> configs) {
+
+        if (configs.isEmpty()) {
+            throw new ArrayIndexOutOfBoundsException();
+        }
+
         final SimpleConfig simpleConfig = new SimpleConfig(FIELD_DOC, configs);
         final String field[] = simpleConfig.getString(FIELD_CONFIG).split(",");
         final String[] field_type = simpleConfig.getString(FIELD_TYPE_CONFIG).split(",");
@@ -434,8 +463,12 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
         String formatPatternDate = simpleConfig.getString(DATE_FORMAT_CONFIG);
 
         if (!field_type[0].equals(FIELD_TYPE_DEFAULT)) {
-            for (String typeMatch : field_type) {
-                TypeConverters.put(typeMatch.split("->")[0], typeMatch.split("->")[1]);
+            try {
+                for (String typeMatch : field_type) {
+                    TypeConverters.put(typeMatch.split("->")[0], typeMatch.split("->")[1]);
+                }
+            } catch (Exception e) {
+                throw new ConfigException("Invalid format for the config parameter FIELD_TYPE" + field_type.toString() + ".Valid format examples <io.debezium.time.Timestamp>-><string>,<io.debezium.time.Date>-><string>");
             }
             structTypeList = Arrays.copyOf(TypeConverters.values().toArray(), TypeConverters.values().toArray().length, String[].class);
         }
@@ -443,12 +476,16 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
         //Adding elements to FieldConversions, to use them later for finding the right field and change the type accordingly.
         //Two things happening here, 1. Getting FieldConversions added with key(tablename) -> value(List(field name->destination type))
         if (!field[0].equals(FIELD_DEFAULT)) {
-            FieldConversions = Arrays.stream(field).collect(Collectors.
-                    groupingBy(key -> key.split("\\.")[0] + "." + key.split("\\.")[1].trim(),
-                            Collectors.groupingBy(val -> val.replace(val.substring(0, val.indexOf(".", val.indexOf(".") + 1) + 1), "").split("->")[0].trim(),
-                                    Collectors.mapping(destTypes -> destTypes.split("->")[1].trim(), Collectors.joining())
-                            )
-                    ));
+            try {
+                FieldConversions = Arrays.stream(field).collect(
+                        Collectors.groupingBy(key -> key.split("\\.")[0] + "." + key.split("\\.")[1].trim(),
+                                Collectors.groupingBy(val -> val.replace(val.substring(0, val.indexOf(".", val.indexOf(".") + 1) + 1), "").split("->")[0].trim(),
+                                        Collectors.mapping(destTypes -> destTypes.split("->")[1].trim(), Collectors.joining())
+                                )
+                        ));
+            } catch (Exception e) {
+                throw new ConfigException("Invalid format for the config parameter FIELD_CONFIG" + field.toString() + ".Valid formats <databasename>.<tablename>.<after/before>.<nestedfield>-><destinationtype> || <databasename>.<tablename>.<field>-><destinationtype>");
+            }
 
             Set<String> destTypes = FieldConversions.values().stream().map(types -> types.values()).flatMap(Collection::stream).collect(Collectors.toSet());
             Set<String> mySet = new HashSet<String>(Arrays.asList(structTypeList));
@@ -511,6 +548,9 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
     }
 
     public static class Key<R extends ConnectRecord<R>> extends TimestampConverter<R> {
+        public Key() {
+        }
+
         @Override
         protected Schema operatingSchema(R record) {
             return record.keySchema();
@@ -528,6 +568,9 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
     }
 
     public static class Value<R extends ConnectRecord<R>> extends TimestampConverter<R> {
+        public Value() {
+        }
+
         @Override
         protected Schema operatingSchema(R record) {
             return record.valueSchema();
@@ -563,6 +606,7 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
         for (Field structField : field.schema().fields()) {
             String structFieldSchemaName = structField.schema().name();
             final Object nestedStructField = ((Struct) value.get(field)).get(structField);
+            //fieldCoversionProvided provides information about, if the field in the loop has been provided in the FIELD_CONFIG. if provided returns true.s
             final Boolean fieldCoversionProvided = getFields(databaseTableString(value.schema().name().toString())).get(field.name()) != null ?
                     getFields(databaseTableString(value.schema().name().toString())).get(field.name()).contains(structField.name()) : false;
             //Checks for datatype conversions
@@ -633,6 +677,7 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
                 continue;
             }
 
+            //field_type has values and field is structField OR
             if (((!(config.field_type.length == 0) && isStruct(field))
                     || getFields(databaseTableString(schema.name().toString())).containsValue(field.name()))
                     && value.get(field) != null) {
@@ -719,7 +764,7 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
             // If not otherwise specified, long == unix time
             return TYPE_UNIX;
         } else if (schema.type().equals(Schema.Type.INT32)) {
-            return TYPE_EPCOH_DATE;
+            return TYPE_EPOCH_DATE;
         }
         throw new ConnectException("Schema " + schema + " does not correspond to a known timestamp type format");
     }
@@ -760,19 +805,19 @@ public abstract class TimestampConverter<R extends ConnectRecord<R>> implements 
         Translator targetTranslator;
 
         if (FieldConversions.get(tableName) != null && FieldConversions.get(tableName).containsKey(field)) {
-            if (TRANSLATORS.get(FieldConversions.get(tableName).get(field)) == null){
+            if (TRANSLATORS.get(FieldConversions.get(tableName).get(field)) == null) {
                 throw new ConnectException("Unsupported timestamp type: " + FieldConversions.get(tableName).get(field));
-            }else {
+            } else {
                 targetTranslator = TRANSLATORS.get(FieldConversions.get(tableName).get(field));
             }
         } else {
-            if(TRANSLATORS.get(TypeConverters.get(originalType.schema().name()))==null){
+            if (TRANSLATORS.get(TypeConverters.get(originalType.schema().name())) == null) {
                 throw new ConnectException("Unsupported timestamp type: " + TypeConverters.get(originalType.schema().name()));
             }
             targetTranslator = TRANSLATORS.get(TypeConverters.get(originalType.schema().name()));
         }
 
-        if (timestampFormat.equals(TYPE_EPCOH_DATE)) {
+        if (timestampFormat.equals(TYPE_EPOCH_DATE)) {
             return targetTranslator.toType(config, rawTimestamp, DATE_FORMAT_CONFIG);
         } else {
             return targetTranslator.toType(config, rawTimestamp, TIMESTAMP_FORMAT_CONFIG);
