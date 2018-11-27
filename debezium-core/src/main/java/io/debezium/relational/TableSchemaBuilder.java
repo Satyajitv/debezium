@@ -44,7 +44,8 @@ import io.debezium.util.SchemaNameAdjuster;
 @ThreadSafe
 @Immutable
 public class TableSchemaBuilder {
-
+    private static int intType;
+    private static String stringType="DummyValue";
     private static final Logger LOGGER = LoggerFactory.getLogger(TableSchemaBuilder.class);
 
     private final SchemaNameAdjuster schemaNameAdjuster;
@@ -185,6 +186,16 @@ public class TableSchemaBuilder {
             return (row) -> {
                 Struct result = new Struct(schema);
                 for (int i = 0; i != numFields; ++i) {
+                    int len = (row.length - 1);
+                    if(i > (row.length - 1)){
+                        if(fields[i].schema().type().name().substring(0,3).equals("INT")){
+                            result.put(fields[i], intType);
+                            continue;
+                        } else {
+                            result.put(fields[i], stringType);
+                            continue;
+                        }
+                    }
                     Object value = row[recordIndexes[i]];
                     ValueConverter converter = converters[i];
                     if (converter != null) {
